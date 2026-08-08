@@ -1,0 +1,24 @@
+{
+  "name": "@jiggai/kitchen-plugin-concierge",
+  "version": "0.1.0",
+  "description": "Read-only conversational concierge for ClawKitchen dashboards.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "drizzle-orm": "^0.36.0",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  }
+}
