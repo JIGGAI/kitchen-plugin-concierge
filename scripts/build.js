@@ -21,7 +21,6 @@ const externals = [
   '--external:better-sqlite3',
   '--external:drizzle-orm',
   '--external:drizzle-orm/*',
-  '--external:openai',
   '--external:crypto',
   '--external:path',
   '--external:fs',

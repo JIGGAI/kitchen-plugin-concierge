@@ -6,6 +6,12 @@ export * as schema from './db/schema';
 export { hasRole, visibleSlices, toolsFor, toolName } from './slices/types';
 export type { Slice, SliceContext, SliceParam, OpenAITool } from './slices/types';
 
+export { streamChat } from './chat/stream';
+export type { ConciergeEvent, StreamChatInput, Source, ChatTurn } from './chat/stream';
+export { readCodexCredential, credentialIsFresh } from './chat/credentials';
+export type { CodexCredential } from './chat/credentials';
+export { systemPrompt, DEFAULT_PERSONA } from './chat/prompt';
+
 export const pluginMeta = {
   id: 'concierge',
   name: 'Concierge',
