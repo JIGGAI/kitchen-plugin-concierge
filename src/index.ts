@@ -18,3 +18,11 @@ export const pluginMeta = {
   version: '0.1.0',
   teamTypes: ['marketing-team', 'ops-team'],
 };
+
+export {
+  openConversation, appendMessage, recentTurns, transcriptFor,
+  archiveConversation, archiveActiveFor, recentSummaries,
+  listConversations, deleteConversation, idleUnsummarized,
+} from './db/history';
+export type { ConversationRow } from './db/history';
+export { summarizeTurns } from './chat/summarize';

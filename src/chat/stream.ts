@@ -1,6 +1,7 @@
 import { visibleSlices, toolsFor, toolName, type Slice, type SliceContext } from '../slices/types';
 import { systemPrompt, DEFAULT_PERSONA } from './prompt';
 import { readCodexCredential, type CodexCredential } from './credentials';
+import { sseEvents, CODEX_ENDPOINT, codexHeaders } from './sse';
 
 export interface Source { id: string; label: string; href: string }
 export interface ChatTurn { role: 'user' | 'assistant'; content: string }
@@ -38,17 +39,6 @@ export interface StreamChatInput {
   hostContext?: Record<string, unknown>;
 }
 
-/**
- * The Codex backend, not api.openai.com.
- *
- * This distinction is the whole reason the concierge works at all: the OAuth
- * credential and the API key belong to the same OpenAI account but bill
- * against different wallets. `/v1/chat/completions` draws on API credits;
- * this endpoint draws on the ChatGPT subscription. Pointing the same token at
- * the standard API returns `credit_balance_exhausted`.
- */
-const CODEX_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
-
 const MAX_TOOL_ROUNDS = 4;
 
 interface PendingCall { callId: string; name: string; args: string }
@@ -77,28 +67,6 @@ function messageItem(role: 'user' | 'assistant', text: string) {
     role,
     content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
   };
-}
-
-/** Parses an SSE byte stream into `data:` payload objects. */
-async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<any> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const frames = buf.split('\n\n');
-    buf = frames.pop() ?? '';
-    for (const frame of frames) {
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        try { yield JSON.parse(payload); } catch { /* keepalive or partial */ }
-      }
-    }
-  }
 }
 
 export async function* streamChat(input: StreamChatInput): AsyncGenerator<ConciergeEvent> {
@@ -132,12 +100,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const res = await doFetch(CODEX_ENDPOINT, {
         method: 'POST',
-        headers: {
-          authorization: `Bearer ${cred.accessToken}`,
-          'chatgpt-account-id': cred.accountId,
-          'OpenAI-Beta': 'responses=experimental',
-          'content-type': 'application/json',
-        },
+        headers: codexHeaders(cred.accessToken, cred.accountId),
         body: JSON.stringify({
           model,
           instructions,
