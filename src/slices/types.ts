@@ -2,6 +2,17 @@ export interface SliceParam {
   type: 'string';
   description: string;
   required?: boolean;
+  /**
+   * Allowed values, emitted into the JSON Schema.
+   *
+   * Prose alone is not enough. A description listing example values reads to
+   * the model as the complete set, so anything omitted looks unavailable and
+   * gets declined without a tool call — and anything listed but invalid is
+   * passed through and silently falls back to a default, answering the wrong
+   * question with no error. If a parameter has a fixed set, enumerate it here
+   * from the source of truth, not from memory.
+   */
+  enum?: string[];
 }
 
 export interface SliceContext {
@@ -75,7 +86,10 @@ export function toolsFor(slices: Slice[], roles: string[]): OpenAITool[] {
       parameters: {
         type: 'object',
         properties: Object.fromEntries(
-          Object.entries(s.parameters).map(([k, p]) => [k, { type: p.type, description: p.description }]),
+          Object.entries(s.parameters).map(([k, p]) => [
+            k,
+            { type: p.type, description: p.description, ...(p.enum?.length ? { enum: p.enum } : {}) },
+          ]),
         ),
         required: Object.entries(s.parameters).filter(([, p]) => p.required).map(([k]) => k),
         additionalProperties: false,

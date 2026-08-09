@@ -93,3 +93,19 @@ describe('the read-only guarantee', () => {
     }
   });
 });
+
+describe('parameter enums', () => {
+  it('emits enum into the JSON Schema so the model is constrained, not guessing', () => {
+    const withEnum: Slice = {
+      ...summary,
+      parameters: { period: { type: 'string', description: 'Window.', enum: ['today', 'yesterday'] } },
+    };
+    const [tool] = toolsFor([withEnum], []);
+    expect((tool.function.parameters as any).properties.period.enum).toEqual(['today', 'yesterday']);
+  });
+
+  it('omits enum entirely when a parameter is free-form', () => {
+    const [tool] = toolsFor([{ ...summary, parameters: { q: { type: 'string', description: 'Free text.' } } }], []);
+    expect((tool.function.parameters as any).properties.q).not.toHaveProperty('enum');
+  });
+});

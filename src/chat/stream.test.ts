@@ -219,3 +219,22 @@ describe('slice announcement ordering', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done', sources: [] });
   });
 });
+
+describe('date context', () => {
+  it("tells the model today's date so it can build custom ranges", async () => {
+    const { impl, state } = stubFetch([[textDelta('ok')]]);
+    await collect(streamChat({
+      ...base, slices: [summary], roles: [], fetchImpl: impl, today: '2026-08-08',
+    } as any));
+    const userItem = state.bodies[0].input.at(-1);
+    expect(userItem.content[0].text).toContain('Today is 2026-08-08');
+  });
+
+  it('keeps the date out of the system prompt, which must stay cacheable', async () => {
+    const { impl, state } = stubFetch([[textDelta('ok')]]);
+    await collect(streamChat({
+      ...base, slices: [summary], roles: [], fetchImpl: impl, today: '2026-08-08',
+    } as any));
+    expect(state.bodies[0].instructions).not.toContain('2026-08-08');
+  });
+});

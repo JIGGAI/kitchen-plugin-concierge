@@ -37,6 +37,8 @@ export interface StreamChatInput {
   fetchImpl?: typeof fetch;
   /** Passed through to every slice's read() as ctx.host. Never inspected. */
   hostContext?: Record<string, unknown>;
+  /** ISO date the model should treat as today. Defaults to the real one. */
+  today?: string;
 }
 
 const MAX_TOOL_ROUNDS = 4;
@@ -54,11 +56,23 @@ function responsesTools(slices: Slice[], roles: string[]) {
 }
 
 function userText(input: StreamChatInput): string {
-  if (!input.route) return input.message;
-  const filters = input.filters && Object.keys(input.filters).length
-    ? ` with filters ${JSON.stringify(input.filters)}`
-    : '';
-  return `${input.message}\n\n(The user is currently viewing the ${input.route} page${filters}.)`;
+  const notes: string[] = [];
+
+  // Today's date, so the model can resolve "the first week of July" or "the
+  // last three days" into a real startDate/endDate. It goes in the user turn
+  // rather than the system prompt on purpose: the system prompt is the
+  // cacheable prefix and must stay byte-identical, and a date in it would
+  // invalidate that cache every midnight.
+  notes.push(`Today is ${input.today ?? new Date().toISOString().slice(0, 10)}.`);
+
+  if (input.route) {
+    const filters = input.filters && Object.keys(input.filters).length
+      ? ` with filters ${JSON.stringify(input.filters)}`
+      : '';
+    notes.push(`The user is currently viewing the ${input.route} page${filters}.`);
+  }
+
+  return `${input.message}\n\n(${notes.join(' ')})`;
 }
 
 function messageItem(role: 'user' | 'assistant', text: string) {
