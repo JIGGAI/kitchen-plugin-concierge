@@ -46,7 +46,7 @@ for await (const ev of streamChat({
   message: question,
   history: [],
   slices,
-  user: { id: 'u1', email: 'rj@hairmx.net' },
+  user: { id: 'u1', email: 'probe@example.com' },
   roles,
   scope: null,
   teamId: 'hmx-marketing-team',
