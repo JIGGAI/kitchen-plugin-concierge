@@ -188,3 +188,34 @@ describe('streamChat', () => {
     expect(JSON.stringify(events)).not.toContain('SECRET');
   });
 });
+
+describe('slice announcement ordering', () => {
+  it('announces the slice before reading it, so the indicator covers a slow fetch', async () => {
+    const order: string[] = [];
+    const slow: Slice = {
+      id: 'slow', label: 'Slow', href: '/slow', description: 'Slow source.',
+      role: null, parameters: {},
+      async read() { order.push('read-start'); return 'data'; },
+    };
+    const { impl } = stubFetch([[fnCall('read_slow')], [textDelta('ok')]]);
+    for await (const ev of streamChat({ ...base, slices: [slow], roles: [], fetchImpl: impl } as any)) {
+      if (ev.type === 'slice') order.push('slice-event');
+    }
+    expect(order).toEqual(['slice-event', 'read-start']);
+  });
+
+  it('does not cite a slice that was announced but then failed', async () => {
+    const boom: Slice = {
+      id: 'boom', label: 'Boom', href: '/boom', description: 'Broken source.',
+      role: null, parameters: {},
+      async read() { throw new Error('db down'); },
+    };
+    const { impl } = stubFetch([[fnCall('read_boom')], [textDelta('could not read')]]);
+    const events: ConciergeEvent[] = [];
+    for await (const ev of streamChat({ ...base, slices: [boom], roles: [], fetchImpl: impl } as any)) {
+      events.push(ev);
+    }
+    expect(events.some((e) => e.type === 'slice')).toBe(true);
+    expect(events.at(-1)).toMatchObject({ type: 'done', sources: [] });
+  });
+});

@@ -34,6 +34,8 @@ export interface StreamChatInput {
   credential?: CodexCredential;
   /** Injected in tests. Production uses global fetch. */
   fetchImpl?: typeof fetch;
+  /** Passed through to every slice's read() as ctx.host. Never inspected. */
+  hostContext?: Record<string, unknown>;
 }
 
 /**
@@ -201,15 +203,27 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
 
         const ctx: SliceContext = {
           teamId: input.teamId, user: input.user, roles: input.roles,
-          scope: input.scope, params,
+          scope: input.scope, params, host: input.hostContext,
         };
+
+        // Announce BEFORE reading, not after. A slice can take seconds — the
+        // Daily Ops read hits YOT in-process and measured ~4s on live data —
+        // and that is exactly the window the "Reading Daily Ops…" indicator
+        // exists to cover. Emitting after the await left the user staring at
+        // nothing for the entire fetch, which stub-backed tests could never
+        // surface because a stub returns instantly.
+        const announced = !seen.has(slice.id);
+        if (announced) {
+          seen.add(slice.id);
+          yield { type: 'slice', id: slice.id, label: slice.label, href: slice.href };
+        }
 
         try {
           const data = await slice.read(ctx);
-          if (!seen.has(slice.id)) {
-            seen.add(slice.id);
+          // Sources list what was actually read, so it is appended on success
+          // only — an announced slice that then failed is not a citation.
+          if (announced) {
             sources.push({ id: slice.id, label: slice.label, href: slice.href });
-            yield { type: 'slice', id: slice.id, label: slice.label, href: slice.href };
           }
           conversation.push({
             type: 'function_call_output', call_id: call.callId,

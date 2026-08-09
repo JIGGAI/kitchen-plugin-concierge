@@ -10,6 +10,13 @@ export interface SliceContext {
   roles: string[];
   scope: unknown;
   params: Record<string, string | undefined>;
+  /**
+   * Opaque bag the host passes through untouched — client options, data-layer
+   * handles, anything a slice implementation needs. The plugin never inspects
+   * it. This is what lets slice implementations live in the host application
+   * (where its data layer already is) instead of being duplicated in here.
+   */
+  host?: Record<string, unknown>;
 }
 
 /**
