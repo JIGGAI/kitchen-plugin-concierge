@@ -62,3 +62,24 @@ describe('config routes', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('conversation read ownership', () => {
+  it('will not return another user\'s transcript', async () => {
+    const { handleRequest } = await import('./handler');
+    const h = await import('../db/history');
+    const TEAM = 'own-test';
+    const mine = h.openConversation(TEAM, 'user-a');
+    h.appendMessage(TEAM, mine, 'user', 'private');
+
+    const asOwner = await handleRequest(
+      { path: `/conversations/${mine}`, method: 'GET', query: { userId: 'user-a' }, headers: { 'x-team-id': TEAM } }, {},
+    );
+    expect(asOwner.status).toBe(200);
+    expect((asOwner.data as any).turns).toHaveLength(1);
+
+    const asOther = await handleRequest(
+      { path: `/conversations/${mine}`, method: 'GET', query: { userId: 'user-b' }, headers: { 'x-team-id': TEAM } }, {},
+    );
+    expect(asOther.status).toBe(404);
+  });
+});

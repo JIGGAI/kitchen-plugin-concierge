@@ -136,6 +136,9 @@ export async function handleRequest(req: PluginRequest, _ctx?: unknown): Promise
 
   if (req.path === '/conversations' && req.method === 'GET') {
     const status = req.query?.status as 'active' | 'archived' | undefined;
+    // userId is optional here on purpose: the Kitchen tab is an admin surface
+    // and lists everyone. The dashboard always passes the session user, so an
+    // end user only ever sees their own.
     return {
       status: 200,
       data: { conversations: listConversations(teamId, { userId: req.query?.userId, status }) },
@@ -144,6 +147,14 @@ export async function handleRequest(req: PluginRequest, _ctx?: unknown): Promise
 
   if (req.path.startsWith('/conversations/') && req.method === 'GET') {
     const id = req.path.slice('/conversations/'.length);
+    // Ownership is enforced here, not left to the caller. When userId is
+    // supplied the conversation must belong to them — otherwise anyone who
+    // learns an id could read someone else's thread.
+    const userId = req.query?.userId;
+    if (userId) {
+      const owned = listConversations(teamId, { userId }).some((c) => c.id === id);
+      if (!owned) return { status: 404, data: { error: 'NOT_FOUND', conversationId: id } };
+    }
     return { status: 200, data: { conversationId: id, turns: transcriptFor(teamId, id) } };
   }
 
