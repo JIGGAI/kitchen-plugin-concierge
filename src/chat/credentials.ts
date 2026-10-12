@@ -11,6 +11,33 @@ export interface CodexCredential {
   planType?: string;
 }
 
+export function selectCodexCredential(
+  store: { profiles?: Record<string, Record<string, unknown>> },
+  now = Date.now(),
+): CodexCredential | null {
+  const credentials: CodexCredential[] = [];
+  for (const profile of Object.values(store.profiles ?? {})) {
+    if (profile?.provider !== 'openai' || profile?.type !== 'oauth') continue;
+
+    const accessToken = typeof profile.access === 'string' ? profile.access : '';
+    const accountId = typeof profile.accountId === 'string' ? profile.accountId : '';
+    if (!accessToken || !accountId) continue;
+
+    credentials.push({
+      accessToken,
+      accountId,
+      expiresAt: typeof profile.expires === 'number' ? profile.expires : 0,
+      planType: typeof profile.chatgptPlanType === 'string' ? profile.chatgptPlanType : undefined,
+    });
+  }
+
+  if (!credentials.length) return null;
+
+  const fresh = credentials.filter((cred) => credentialIsFresh(cred, 60_000, now));
+  return (fresh.length ? fresh : credentials)
+    .sort((a, b) => b.expiresAt - a.expiresAt)[0];
+}
+
 /**
  * Reads the OpenAI OAuth credential OpenClaw keeps for an agent.
  *
@@ -44,23 +71,7 @@ export function readCodexCredential(agentId = 'main'): CodexCredential | null {
       .get() as { store_json?: string } | undefined;
     if (!row?.store_json) return null;
 
-    const store = JSON.parse(row.store_json) as {
-      profiles?: Record<string, Record<string, unknown>>;
-    };
-    const profile = Object.values(store.profiles ?? {})
-      .find((p) => p?.provider === 'openai' && p?.type === 'oauth');
-    if (!profile) return null;
-
-    const accessToken = typeof profile.access === 'string' ? profile.access : '';
-    const accountId = typeof profile.accountId === 'string' ? profile.accountId : '';
-    if (!accessToken || !accountId) return null;
-
-    return {
-      accessToken,
-      accountId,
-      expiresAt: typeof profile.expires === 'number' ? profile.expires : 0,
-      planType: typeof profile.chatgptPlanType === 'string' ? profile.chatgptPlanType : undefined,
-    };
+    return selectCodexCredential(JSON.parse(row.store_json));
   } catch {
     return null;
   } finally {
@@ -68,6 +79,6 @@ export function readCodexCredential(agentId = 'main'): CodexCredential | null {
   }
 }
 
-export function credentialIsFresh(cred: CodexCredential, skewMs = 60_000): boolean {
-  return cred.expiresAt === 0 || cred.expiresAt - skewMs > Date.now();
+export function credentialIsFresh(cred: CodexCredential, skewMs = 60_000, now = Date.now()): boolean {
+  return cred.expiresAt === 0 || cred.expiresAt - skewMs > now;
 }
