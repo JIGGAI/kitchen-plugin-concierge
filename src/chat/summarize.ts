@@ -1,5 +1,9 @@
-import { readCodexCredential, type CodexCredential } from './credentials';
-import { sseEvents, CODEX_ENDPOINT, codexHeaders } from './sse';
+import { randomUUID } from 'node:crypto';
+import {
+  readGatewayTarget, responsesUrl, gatewayHeaders, sessionKeyFor, describeGatewayFailure,
+  type GatewayTarget,
+} from './gateway';
+import { sseEvents } from './sse';
 import type { ChatTurn } from '../db/history';
 
 const PROMPT =
@@ -10,9 +14,11 @@ const PROMPT =
   + 'No preamble — start with the substance.';
 
 export interface SummarizeOptions {
-  model?: string;
-  credential?: CodexCredential;
+  /** Names the gateway session (`agent:<id>:summary:<conversationId>`). */
+  conversationId?: string;
+  gateway?: GatewayTarget | null;
   fetchImpl?: typeof fetch;
+  log?: (line: string) => void;
 }
 
 /**
@@ -22,8 +28,8 @@ export interface SummarizeOptions {
  * either way, and a missing summary is a far smaller loss than a stuck job or
  * a thread that stays open because its digest could not be written.
  *
- * Non-streaming: nothing user-facing waits on this. It runs behind the Clear
- * response and in the nightly job.
+ * Nothing user-facing waits on this. It runs behind the Clear response and in
+ * the nightly job.
  */
 export async function summarizeTurns(
   turns: ChatTurn[],
@@ -31,8 +37,12 @@ export async function summarizeTurns(
 ): Promise<string | null> {
   if (!turns.length) return null;
 
-  const cred = opts.credential ?? readCodexCredential();
-  if (!cred) return null;
+  const log = opts.log ?? ((line: string) => console.error(`[concierge] ${line}`));
+  const target = opts.gateway === undefined ? readGatewayTarget() : opts.gateway;
+  if (!target) {
+    log('summarize: no gateway target');
+    return null;
+  }
 
   const transcript = turns
     .map((t) => `${t.role === 'user' ? 'Staff' : 'Govna'}: ${t.content}`)
@@ -40,24 +50,24 @@ export async function summarizeTurns(
     .slice(0, 12_000);
 
   const doFetch = opts.fetchImpl ?? fetch;
+  const sessionKey = sessionKeyFor(target, 'summary', opts.conversationId ?? randomUUID());
 
   try {
-    const res = await doFetch(CODEX_ENDPOINT, {
+    const res = await doFetch(responsesUrl(target), {
       method: 'POST',
-      headers: codexHeaders(cred.accessToken, cred.accountId),
+      headers: gatewayHeaders(target, sessionKey),
       body: JSON.stringify({
-        model: opts.model ?? 'gpt-5.5',
+        model: `openclaw/${target.agentId}`,
         instructions: PROMPT,
         input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: transcript }] }],
-        reasoning: { effort: 'low' },
-        // Must be true. The codex backend rejects a non-streaming request
-        // outright: {"detail":"Stream must be set to true"}. Even a one-shot
-        // summary is read off the stream and accumulated.
         stream: true,
         store: false,
       }),
     });
-    if (!res.ok || !res.body) return null;
+    if (!res.ok || !res.body) {
+      log(`${sessionKey}: ${await describeGatewayFailure(res, target.token)}`);
+      return null;
+    }
 
     let text = '';
     for await (const ev of sseEvents(res.body)) {
@@ -67,7 +77,8 @@ export async function summarizeTurns(
     }
 
     return text.trim() || null;
-  } catch {
+  } catch (err: any) {
+    log(`${sessionKey}: transport: ${String(err?.message ?? err).split(target.token).join('[token]')}`.slice(0, 300));
     return null;
   }
 }

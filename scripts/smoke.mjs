@@ -3,14 +3,14 @@ import { fileURLToPath } from 'url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { streamChat } = await import(join(here, '..', 'dist', 'chat', 'stream.js'));
-const { readCodexCredential } = await import(join(here, '..', 'dist', 'index.js'));
+const { readGatewayTarget } = await import(join(here, '..', 'dist', 'index.js'));
 
-const cred = readCodexCredential();
-if (!cred) {
-  console.error('No OpenClaw OAuth credential found. Is OpenClaw configured on this machine?');
+const target = readGatewayTarget();
+if (!target) {
+  console.error('No OpenClaw gateway found. Set CONCIERGE_GATEWAY_TOKEN or check ~/.openclaw/openclaw.json.');
   process.exit(1);
 }
-console.log(`credential: plan=${cred.planType ?? 'unknown'} expires=${new Date(cred.expiresAt).toISOString()}`);
+console.log(`gateway: ${target.url} agent=${target.agentId}`);
 
 const slices = [{
   id: 'summary',
@@ -44,7 +44,7 @@ let firstEvent = null;
 
 for await (const ev of streamChat({
   message: question,
-  history: [],
+  conversationId: `smoke-${Date.now()}`,
   slices,
   user: { id: 'u1', email: 'probe@example.com' },
   roles,

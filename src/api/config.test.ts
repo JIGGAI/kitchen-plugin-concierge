@@ -14,7 +14,7 @@ describe('config routes', () => {
     const { handleRequest } = await import('./handler');
     const res = await handleRequest({ path: '/config', method: 'GET', headers }, {});
     expect(res.status).toBe(200);
-    expect(res.data).toMatchObject({ model: 'gpt-5.5' });
+    expect(res.data).toMatchObject({ agentId: 'hmx-govna', persona: expect.any(String) });
     expect((res.data as any).persona.length).toBeGreaterThan(10);
   });
 
@@ -27,12 +27,13 @@ describe('config routes', () => {
     expect((res.data as any).persona).toBe('Terse and factual.');
   });
 
-  it('rejects an unknown model', async () => {
+  it('ignores a model field — the model belongs to the OpenClaw agent, not this config', async () => {
     const { handleRequest } = await import('./handler');
     const res = await handleRequest(
-      { path: '/config', method: 'POST', headers, body: { model: 'definitely-not-a-model' } }, {},
+      { path: '/config', method: 'POST', headers, body: { model: 'gpt-5.5' } }, {},
     );
     expect(res.status).toBe(400);
+    expect(res.data).toMatchObject({ error: 'nothing to update' });
   });
 
   it('rejects an oversized persona', async () => {
@@ -51,7 +52,7 @@ describe('config routes', () => {
     // Unknown keys are ignored; nothing to update means a 400, not a silent accept.
     expect(res.status).toBe(400);
     const after = await handleRequest({ path: '/config', method: 'GET', headers }, {});
-    expect(Object.keys(after.data as object).sort()).toEqual(['enabledSlices', 'model', 'persona']);
+    expect(Object.keys(after.data as object).sort()).toEqual(['agentId', 'enabledSlices', 'persona']);
   });
 
   it('accepts Kitchen\'s ?team= as well as the x-team-id header', async () => {

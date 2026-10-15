@@ -7,9 +7,7 @@ import { api, formatDate, t } from './common';
   const useEffect = R.useEffect as typeof R.useEffect;
   const useState = R.useState as (initial: any) => [any, (value: any) => void];
 
-  const MODELS = ['gpt-5.5', 'gpt-5', 'gpt-5-mini'];
-
-  type Config = { persona: string; model: string; enabledSlices: string[] | null };
+  type Config = { persona: string; agentId: string; enabledSlices: string[] | null };
   type ConversationRow = {
     id: string;
     userId: string;
@@ -81,7 +79,7 @@ import { api, formatDate, t } from './common';
     return h('div', { style: t.page },
       h('h2', { style: t.h2 }, 'Concierge'),
       h('p', { style: t.muted },
-        'Persona and model for the dashboard chat box. Which data the concierge can '
+        'Persona for the dashboard chat box. Which data the concierge can '
         + 'read is defined in the slice registry and changed by a commit, not here.'),
 
       h('label', { style: t.label }, 'Persona',
@@ -92,12 +90,9 @@ import { api, formatDate, t } from './common';
           onChange: (e: any) => setCfg({ ...cfg, persona: e.target.value }),
         })),
 
-      h('label', { style: t.label }, 'Model',
-        h('select', {
-          value: cfg.model,
-          style: { display: 'block', marginTop: 6 },
-          onChange: (e: any) => save({ model: e.target.value }),
-        }, MODELS.map((m) => h('option', { key: m, value: m }, m)))),
+      h('p', { style: t.muted },
+        `Answers come from the OpenClaw agent ${cfg.agentId} through the gateway; `
+        + 'its model is set in openclaw.json like every other agent.'),
 
       h('button', {
         style: { marginTop: 20 },

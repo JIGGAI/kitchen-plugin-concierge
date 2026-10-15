@@ -6,8 +6,8 @@ import {
 } from '../db/history';
 import { pluginConfig } from '../db/schema';
 import { DEFAULT_PERSONA } from '../chat/prompt';
+import { DEFAULT_AGENT_ID } from '../chat/gateway';
 
-const ALLOWED_MODELS = ['gpt-5.5', 'gpt-5', 'gpt-5-mini'];
 const MAX_PERSONA_CHARS = 4000;
 
 function readConfig(teamId: string) {
@@ -19,7 +19,9 @@ function readConfig(teamId: string) {
   if (raw) { try { enabledSlices = JSON.parse(raw); } catch { enabledSlices = null; } }
   return {
     persona: map.get('persona') ?? DEFAULT_PERSONA,
-    model: map.get('model') ?? 'gpt-5.5',
+    // Read-only: which OpenClaw agent answers. The model is that agent's,
+    // chosen in openclaw.json like every other agent's.
+    agentId: process.env.CONCIERGE_AGENT_ID || DEFAULT_AGENT_ID,
     enabledSlices,
   };
 }
@@ -90,12 +92,6 @@ export async function handleRequest(req: PluginRequest, _ctx?: unknown): Promise
         return { status: 400, data: { error: `persona too long (max ${MAX_PERSONA_CHARS} chars)` } };
       }
       patch.persona = body.persona;
-    }
-    if (typeof body.model === 'string') {
-      if (!ALLOWED_MODELS.includes(body.model)) {
-        return { status: 400, data: { error: `model must be one of ${ALLOWED_MODELS.join(', ')}` } };
-      }
-      patch.model = body.model;
     }
     if (Array.isArray(body.enabledSlices)) {
       patch.enabledSlices = JSON.stringify(body.enabledSlices.map(String));
