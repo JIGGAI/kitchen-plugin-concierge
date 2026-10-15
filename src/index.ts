@@ -8,8 +8,8 @@ export type { Slice, SliceContext, SliceParam, OpenAITool } from './slices/types
 
 export { streamChat } from './chat/stream';
 export type { ConciergeEvent, StreamChatInput, Source, ChatTurn } from './chat/stream';
-export { readCodexCredential, credentialIsFresh } from './chat/credentials';
-export type { CodexCredential } from './chat/credentials';
+export { readGatewayTarget, sessionKeyFor, DEFAULT_AGENT_ID } from './chat/gateway';
+export type { GatewayTarget } from './chat/gateway';
 export { systemPrompt, DEFAULT_PERSONA } from './chat/prompt';
 
 export const pluginMeta = {

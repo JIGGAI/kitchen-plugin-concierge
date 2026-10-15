@@ -49,14 +49,29 @@ idle threads are summarized and archived with every message row intact.
 
 ## Model transport
 
-Requests go to the Codex backend (`chatgpt.com/backend-api/codex/responses`)
-using the OAuth credential OpenClaw stores in `openclaw-agent.sqlite`.
+Requests go to the local OpenClaw gateway's OpenResponses endpoint
+(`POST /v1/responses`, `model: openclaw/hmx-govna`). OpenClaw runs the
+`hmx-govna` agent with whatever model, credential and provider its config
+names, exactly as for every other agent on the box; the concierge never holds
+a provider credential. The slices stay client tools: the agent is scaffolded
+from `~/.openclaw/workspace/recipes/hmx-govna.md` with no server-side tools,
+and each request supplies the function tools the signed-in user may call.
 
-**The credential is read, never refreshed.** OAuth refresh tokens are
-single-use and rotate; OpenClaw owns that cycle. A second refresher would get
-`refresh_token_reused`, and providers commonly treat reuse as a breach signal
-and revoke the entire token family — which would take down every agent on the
-machine, not just the concierge.
+One gateway session per dashboard conversation
+(`x-openclaw-session-key: agent:hmx-govna:conv:<conversationId>`), so only the
+new turn is sent; the gateway keeps the transcript. Tool rounds continue the
+same response with `previous_response_id` and `function_call_output` items.
+
+Resolution of the gateway, in order: `CONCIERGE_GATEWAY_URL` /
+`CONCIERGE_GATEWAY_TOKEN`, then `gateway.port` / `gateway.auth.token` from
+`~/.openclaw/openclaw.json` (`OPENCLAW_CONFIG_PATH` to point elsewhere).
+`CONCIERGE_AGENT_ID` changes the agent. The endpoint must be enabled:
+`gateway.http.endpoints.responses.enabled: true`.
+
+A failed call is logged as `[concierge] agent:... gateway <status>: <reason>`
+(token scrubbed) and surfaced as an `error` event with `code: gateway_<status>`
+and a short `detail`, so the next outage is one grep away instead of a
+generic "could not complete that request".
 
 ## Development
 

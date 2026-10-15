@@ -44,6 +44,7 @@ const fnCall = (name: string, callId = 'call_1', args = '{}') => ({
   type: 'response.output_item.done',
   item: { type: 'function_call', id: 'fc_1', call_id: callId, name, arguments: args },
 });
+const completed = (id = 'resp_1') => ({ type: 'response.completed', response: { id, status: 'incomplete' } });
 
 async function collect(gen: AsyncGenerator<ConciergeEvent>) {
   const out: ConciergeEvent[] = [];
@@ -51,15 +52,16 @@ async function collect(gen: AsyncGenerator<ConciergeEvent>) {
   return out;
 }
 
-const credential = { accessToken: 'tok-SECRET', accountId: 'acct-1', expiresAt: Date.now() + 3_600_000 };
+const gateway = { url: 'http://gw.test', token: 'tok-SECRET', agentId: 'hmx-govna' };
 
 const base = {
   message: 'How did we do last month?',
-  history: [],
+  conversationId: 'conv-1',
   user: { id: 'u1', email: 'a@b.co' },
   scope: null,
   teamId: 'hmx-marketing-team',
-  credential,
+  gateway,
+  log: () => {},
 };
 
 describe('streamChat', () => {
@@ -73,26 +75,46 @@ describe('streamChat', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done' });
   });
 
-  it('calls the codex backend, not the standard API', async () => {
+  it('posts to the gateway OpenResponses endpoint as the Govna agent', async () => {
     const calls: string[] = [];
+    let body: any = null;
     const impl = (async (url: string, init: any) => {
-      calls.push(url);
+      calls.push(url); body = JSON.parse(init.body);
       return { ok: true, status: 200, body: sseBody([textDelta('hi')]) } as unknown as Response;
     }) as unknown as typeof fetch;
     await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
-    expect(calls[0]).toBe('https://chatgpt.com/backend-api/codex/responses');
-    expect(calls[0]).not.toContain('api.openai.com');
+    expect(calls[0]).toBe('http://gw.test/v1/responses');
+    expect(body.model).toBe('openclaw/hmx-govna');
+    expect(body.stream).toBe(true);
   });
 
-  it('sends the account header the codex backend requires', async () => {
+  it('authenticates with the gateway token and names a per-conversation session', async () => {
     let headers: any = null;
     const impl = (async (_url: string, init: any) => {
       headers = init.headers;
       return { ok: true, status: 200, body: sseBody([textDelta('hi')]) } as unknown as Response;
     }) as unknown as typeof fetch;
     await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
-    expect(headers['chatgpt-account-id']).toBe('acct-1');
     expect(headers.authorization).toBe('Bearer tok-SECRET');
+    expect(headers['x-openclaw-session-key']).toBe('agent:hmx-govna:conv:conv-1');
+  });
+
+  it('sends only the new turn; the gateway session holds the history', async () => {
+    const { impl, state } = stubFetch([[textDelta('ok')]]);
+    await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
+    const roles = state.bodies[0].input.map((i: any) => `${i.type}:${i.role ?? ''}`);
+    expect(roles).toEqual(['message:user']);
+  });
+
+  it('passes prior-conversation digests as a system message, not as fake history', async () => {
+    const { impl, state } = stubFetch([[textDelta('ok')]]);
+    await collect(streamChat({
+      ...base, priorContext: 'Earlier: asked about Auburn Hills.', slices: [summary], roles: [], fetchImpl: impl,
+    } as any));
+    const [first, second] = state.bodies[0].input;
+    expect(first).toMatchObject({ type: 'message', role: 'system' });
+    expect(first.content[0].text).toContain('Auburn Hills');
+    expect(second).toMatchObject({ type: 'message', role: 'user' });
   });
 
   it('runs a tool call, emits a slice event, and records the source', async () => {
@@ -111,13 +133,15 @@ describe('streamChat', () => {
 
   it('feeds the slice output back as a function_call_output item', async () => {
     const { impl, state } = stubFetch([
-      [fnCall('read_summary', 'call_abc')],
+      [fnCall('read_summary', 'call_abc'), completed('resp_1')],
       [textDelta('done')],
     ]);
     await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
     const second = state.bodies[1];
-    const out = second.input.find((i: any) => i.type === 'function_call_output');
-    expect(out).toMatchObject({ call_id: 'call_abc', output: 'Revenue last month: $482,100' });
+    expect(second.input).toEqual([
+      { type: 'function_call_output', call_id: 'call_abc', output: 'Revenue last month: $482,100' },
+    ]);
+    expect(second.previous_response_id).toBe('resp_1');
   });
 
   it('uses the flat Responses tool shape', async () => {
@@ -160,32 +184,40 @@ describe('streamChat', () => {
     expect(events.some((e) => e.type === 'delta')).toBe(true);
   });
 
-  it('reports a provider failure as an error event rather than throwing', async () => {
-    const impl = (async () => ({ ok: false, status: 429, body: null } as unknown as Response)) as unknown as typeof fetch;
+  it('reports a gateway failure with its reason, logged and token-free', async () => {
+    const lines: string[] = [];
+    const impl = (async () => ({
+      ok: false, status: 400, body: null,
+      text: async () => JSON.stringify({ error: { message: "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account. tok-SECRET" } }),
+    } as unknown as Response)) as unknown as typeof fetch;
     const events = await collect(
-      streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any),
+      streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl, log: (l: string) => lines.push(l) } as any),
     );
-    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'provider_429' });
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'gateway_400' });
+    expect((events.at(-1) as any).detail).toContain('gpt-5.5');
+    expect(lines[0]).toContain('agent:hmx-govna:conv:conv-1');
+    expect(lines[0]).toContain('gateway 400');
+    expect(JSON.stringify([events, lines])).not.toContain('SECRET');
   });
 
-  it('errors cleanly when no credential is available', async () => {
+  it('errors cleanly when no gateway is available', async () => {
     const events = await collect(
       streamChat({
-        ...base, credential: undefined, slices: [summary], roles: [],
+        ...base, gateway: null, slices: [summary], roles: [],
         fetchImpl: (async () => { throw new Error('should not be called'); }) as any,
-        // Point the reader at a path that does not exist so it returns null.
       } as any),
     );
-    // Either no_credential (reader found nothing) or a provider error — never a throw.
-    expect(['no_credential', 'provider_error']).toContain((events.at(-1) as any).code);
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'no_gateway' });
   });
 
   it('does not leak the access token into any event', async () => {
     const impl = (async () => { throw new Error('auth failed for tok-SECRET'); }) as unknown as typeof fetch;
+    const lines: string[] = [];
     const events = await collect(
-      streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any),
+      streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl, log: (l: string) => lines.push(l) } as any),
     );
-    expect(JSON.stringify(events)).not.toContain('SECRET');
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'gateway_error' });
+    expect(JSON.stringify([events, lines])).not.toContain('SECRET');
   });
 });
 

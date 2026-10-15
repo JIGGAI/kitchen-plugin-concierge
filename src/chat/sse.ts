@@ -1,9 +1,10 @@
 /**
  * Parses an SSE byte stream into `data:` payload objects.
  *
- * Shared by the chat loop and the summarizer because the codex backend
- * refuses `stream: false` outright ({"detail":"Stream must be set to true"}),
- * so even a one-shot summary has to be read off a stream.
+ * Shared by the chat loop and the summarizer: the gateway's OpenResponses
+ * endpoint streams Responses-API events (`response.output_text.delta`,
+ * `response.output_item.done`, `response.completed`, ...), one JSON object
+ * per `data:` line.
  */
 export async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<any> {
   const reader = body.getReader();
@@ -24,15 +25,4 @@ export async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerat
       }
     }
   }
-}
-
-export const CODEX_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
-
-export function codexHeaders(accessToken: string, accountId: string): Record<string, string> {
-  return {
-    authorization: `Bearer ${accessToken}`,
-    'chatgpt-account-id': accountId,
-    'OpenAI-Beta': 'responses=experimental',
-    'content-type': 'application/json',
-  };
 }

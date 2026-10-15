@@ -1,7 +1,10 @@
 import { visibleSlices, toolsFor, toolName, type Slice, type SliceContext } from '../slices/types';
 import { systemPrompt, DEFAULT_PERSONA } from './prompt';
-import { readCodexCredential, type CodexCredential } from './credentials';
-import { sseEvents, CODEX_ENDPOINT, codexHeaders } from './sse';
+import {
+  readGatewayTarget, responsesUrl, gatewayHeaders, sessionKeyFor, describeGatewayFailure,
+  type GatewayTarget,
+} from './gateway';
+import { sseEvents } from './sse';
 
 export interface Source { id: string; label: string; href: string }
 export interface ChatTurn { role: 'user' | 'assistant'; content: string }
@@ -10,11 +13,23 @@ export type ConciergeEvent =
   | { type: 'delta'; text: string }
   | { type: 'slice'; id: string; label: string; href: string }
   | { type: 'done'; sources: Source[] }
-  | { type: 'error'; code: string; message: string };
+  /** `detail` is a short, token-free description for logs and the console; `message` is for the user. */
+  | { type: 'error'; code: string; message: string; detail?: string };
 
 export interface StreamChatInput {
   message: string;
-  history: ChatTurn[];
+  /**
+   * The dashboard conversation id. It names the gateway session, so the
+   * agent remembers the thread across turns without the concierge replaying
+   * it. A new conversation id is a new session.
+   */
+  conversationId: string;
+  /**
+   * Context the gateway session cannot have yet — the digests of this user's
+   * earlier conversations. The dashboard passes it on the first turn of a
+   * thread only; it goes in as a system message, not as fake history.
+   */
+  priorContext?: string;
   slices: Slice[];
   user: { id: string; email: string };
   roles: string[];
@@ -22,19 +37,16 @@ export interface StreamChatInput {
   teamId: string;
   route?: string;
   filters?: Record<string, string>;
-  model?: string;
   persona?: string;
   /**
-   * Reasoning depth. The backend defaults to `medium`, which on sampling
-   * produced a long tail (one run in four past 5s to first feedback). `low`
-   * is the right default for a concierge: the questions are lookups, not
-   * analysis, and the slice does the real work.
+   * Overrides the gateway resolved from the environment / openclaw.json.
+   * Tests pass a fake; `null` means "none available".
    */
-  effort?: 'low' | 'medium' | 'high';
-  /** Overrides the credential read from OpenClaw. Tests pass a fake. */
-  credential?: CodexCredential;
+  gateway?: GatewayTarget | null;
   /** Injected in tests. Production uses global fetch. */
   fetchImpl?: typeof fetch;
+  /** Where failures are written. Defaults to console.error. */
+  log?: (line: string) => void;
   /** Passed through to every slice's read() as ctx.host. Never inspected. */
   hostContext?: Record<string, unknown>;
   /** ISO date the model should treat as today. Defaults to the real one. */
@@ -42,6 +54,7 @@ export interface StreamChatInput {
 }
 
 const MAX_TOOL_ROUNDS = 4;
+const USER_MESSAGE = 'Govna could not complete that request.';
 
 interface PendingCall { callId: string; name: string; args: string }
 
@@ -75,72 +88,68 @@ function userText(input: StreamChatInput): string {
   return `${input.message}\n\n(${notes.join(' ')})`;
 }
 
-function messageItem(role: 'user' | 'assistant', text: string) {
-  return {
-    type: 'message',
-    role,
-    content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
-  };
+function messageItem(role: 'user' | 'system', text: string) {
+  return { type: 'message', role, content: [{ type: 'input_text', text }] };
 }
 
 export async function* streamChat(input: StreamChatInput): AsyncGenerator<ConciergeEvent> {
   const allowed = visibleSlices(input.slices, input.roles);
   const tools = responsesTools(input.slices, input.roles);
   const byToolName = new Map(allowed.map((s) => [toolName(s.id), s]));
+  const log = input.log ?? ((line: string) => console.error(`[concierge] ${line}`));
 
-  const cred = input.credential ?? readCodexCredential();
-  if (!cred) {
-    yield {
-      type: 'error',
-      code: 'no_credential',
-      message: 'Govna has no model credential configured.',
-    };
+  const target = input.gateway === undefined ? readGatewayTarget() : input.gateway;
+  if (!target) {
+    log('no gateway target: set CONCIERGE_GATEWAY_TOKEN or make ~/.openclaw/openclaw.json readable');
+    yield { type: 'error', code: 'no_gateway', message: 'Govna cannot reach OpenClaw.' };
     return;
   }
 
   const doFetch = input.fetchImpl ?? fetch;
-  const model = input.model ?? 'gpt-5.5';
   const instructions = systemPrompt(input.persona ?? DEFAULT_PERSONA, allowed);
+  const sessionKey = sessionKeyFor(target, 'conv', input.conversationId);
 
-  const conversation: any[] = [
-    ...input.history.map((t) => messageItem(t.role, t.content)),
+  // Only the new turn goes up. The gateway session already holds every earlier
+  // turn of this conversation, and resending them would double the transcript
+  // the agent sees on every request.
+  let nextInput: any[] = [
+    ...(input.priorContext ? [messageItem('system', input.priorContext)] : []),
     messageItem('user', userText(input)),
   ];
+  let previousResponseId: string | undefined;
 
   const sources: Source[] = [];
   const seen = new Set<string>();
 
   try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-      const res = await doFetch(CODEX_ENDPOINT, {
+      const res = await doFetch(responsesUrl(target), {
         method: 'POST',
-        headers: codexHeaders(cred.accessToken, cred.accountId),
+        headers: gatewayHeaders(target, sessionKey),
         body: JSON.stringify({
-          model,
+          model: `openclaw/${target.agentId}`,
           instructions,
-          input: conversation,
+          input: nextInput,
           ...(tools.length ? { tools } : {}),
-          reasoning: { effort: input.effort ?? 'low' },
+          ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
           stream: true,
           store: false,
         }),
       });
 
       if (!res.ok || !res.body) {
-        yield {
-          type: 'error',
-          code: `provider_${res.status}`,
-          message: 'Govna could not complete that request.',
-        };
+        const detail = await describeGatewayFailure(res, target.token);
+        log(`${sessionKey} round ${round}: ${detail}`);
+        yield { type: 'error', code: `gateway_${res.status}`, message: USER_MESSAGE, detail };
         return;
       }
 
       const calls: PendingCall[] = [];
-      let assistantText = '';
+      let responseId: string | undefined;
 
       for await (const ev of sseEvents(res.body)) {
+        if (typeof ev?.response?.id === 'string') responseId = ev.response.id;
         if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
-          assistantText += ev.delta;
           yield { type: 'delta', text: ev.delta };
         } else if (ev.type === 'response.output_item.done' && ev.item?.type === 'function_call') {
           calls.push({
@@ -153,13 +162,8 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
 
       if (!calls.length) break;
 
-      // Echo the assistant's text and each call back, then append the results.
-      if (assistantText) conversation.push(messageItem('assistant', assistantText));
-      for (const c of calls) {
-        conversation.push({
-          type: 'function_call', call_id: c.callId, name: c.name, arguments: c.args,
-        });
-      }
+      previousResponseId = responseId;
+      nextInput = [];
 
       for (const call of calls) {
         const slice = byToolName.get(call.name);
@@ -168,7 +172,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
         // tool list, so the model should never name it — but the one property
         // this whole design exists for is not left to "should".
         if (!slice) {
-          conversation.push({
+          nextInput.push({
             type: 'function_call_output', call_id: call.callId,
             output: 'No such tool is available to you.',
           });
@@ -202,13 +206,13 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
           if (announced) {
             sources.push({ id: slice.id, label: slice.label, href: slice.href });
           }
-          conversation.push({
+          nextInput.push({
             type: 'function_call_output', call_id: call.callId,
             output: data ?? 'No data available for that request.',
           });
         } catch (err) {
           // One bad slice must not fail the chat.
-          conversation.push({
+          nextInput.push({
             type: 'function_call_output', call_id: call.callId,
             output: `That data could not be read right now: ${err instanceof Error ? err.message : String(err)}`,
           });
@@ -218,12 +222,11 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
 
     yield { type: 'done', sources };
   } catch (err: any) {
-    // Never surface the credential or a raw provider payload — an auth failure
-    // can echo the token back in its message.
-    yield {
-      type: 'error',
-      code: err?.status ? `provider_${err.status}` : 'provider_error',
-      message: 'Govna could not complete that request.',
-    };
+    // The gateway token never reaches an event. The log line carries only the
+    // error's constructor and message, which for a fetch failure is network
+    // detail, not the request headers.
+    const detail = `transport: ${err?.name ?? 'Error'} ${String(err?.message ?? err).split(target.token).join('[token]')}`.slice(0, 300);
+    log(`${sessionKey}: ${detail}`);
+    yield { type: 'error', code: 'gateway_error', message: USER_MESSAGE, detail };
   }
 }
