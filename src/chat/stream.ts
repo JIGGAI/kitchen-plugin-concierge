@@ -13,6 +13,12 @@ export type ConciergeEvent =
   | { type: 'delta'; text: string }
   | { type: 'slice'; id: string; label: string; href: string }
   | { type: 'done'; sources: Source[] }
+  /**
+   * One per distinct read in a round, after it returns. Keeps bytes flowing on
+   * the SSE stream while a turn is reading, and tells the host how long each
+   * read took and how many duplicate calls it absorbed.
+   */
+  | { type: 'progress'; tool: string; ms: number; duplicates: number; ok: boolean }
   /** `detail` is a short, token-free description for logs and the console; `message` is for the user. */
   | { type: 'error'; code: string; message: string; detail?: string };
 
@@ -54,9 +60,46 @@ export interface StreamChatInput {
 }
 
 const MAX_TOOL_ROUNDS = 4;
+/**
+ * Distinct reads executed per round. The model has fanned out 27 calls in one
+ * round (2026-10-26, all the same tool with empty arguments); the slices are
+ * the slow part of a turn, so anything past this is answered with a note
+ * instead of read.
+ */
+const MAX_DISTINCT_READS_PER_ROUND = 6;
+const READ_CONCURRENCY = 4;
 const USER_MESSAGE = 'Govna could not complete that request.';
 
 interface PendingCall { callId: string; name: string; args: string }
+
+/** Stable key for "the same call": tool name plus arguments with sorted keys. */
+function callKey(call: PendingCall): string {
+  const canonical = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canonical((v as any)[k])]));
+    }
+    return v;
+  };
+  let args: unknown;
+  try { args = canonical(JSON.parse(call.args || '{}')); } catch { args = call.args; }
+  return `${call.name}\u0000${JSON.stringify(args)}`;
+}
+
+/** Runs `fn` over `items` with at most `limit` in flight; results keep order. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 /** Responses-API tool shape: flat, unlike Chat Completions' nested `function`. */
 function responsesTools(slices: Slice[], roles: string[]) {
@@ -165,56 +208,90 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
       previousResponseId = responseId;
       nextInput = [];
 
+      // The model may issue the same call many times in one round — 27 copies
+      // of one read with empty arguments was observed — and the slices are the
+      // slow part of a turn. Identical calls are read once and every call id
+      // gets an answer; distinct reads run a few at a time.
+      const groups = new Map<string, PendingCall[]>();
       for (const call of calls) {
-        const slice = byToolName.get(call.name);
+        const key = callKey(call);
+        const group = groups.get(key);
+        if (group) group.push(call); else groups.set(key, [call]);
+      }
+      const distinct = [...groups.values()];
+      const toRead = distinct.slice(0, MAX_DISTINCT_READS_PER_ROUND);
+      const overflow = distinct.slice(MAX_DISTINCT_READS_PER_ROUND);
+
+      // Announce BEFORE reading, not after. A slice can take seconds — the
+      // Daily Ops read hits YOT in-process and measured ~4s on live data —
+      // and that is exactly the window the "Reading Daily Ops…" indicator
+      // exists to cover.
+      const announcedNow = new Set<string>();
+      for (const [lead] of toRead) {
+        const slice = byToolName.get(lead.name);
+        if (slice && !seen.has(slice.id)) {
+          seen.add(slice.id);
+          announcedNow.add(slice.id);
+          yield { type: 'slice', id: slice.id, label: slice.label, href: slice.href };
+        }
+      }
+
+      type ReadResult = { group: PendingCall[]; output: string; ok: boolean; ms: number; sliceId?: string };
+      const results = await mapLimit(toRead, READ_CONCURRENCY, async (group): Promise<ReadResult> => {
+        const lead = group[0];
+        const slice = byToolName.get(lead.name);
+        const t0 = Date.now();
 
         // Defense in depth. A slice the caller lacks the role for is not in the
         // tool list, so the model should never name it — but the one property
         // this whole design exists for is not left to "should".
         if (!slice) {
-          nextInput.push({
-            type: 'function_call_output', call_id: call.callId,
-            output: 'No such tool is available to you.',
-          });
-          continue;
+          return { group, output: 'No such tool is available to you.', ok: false, ms: 0 };
         }
 
         let params: Record<string, string | undefined> = {};
-        try { params = JSON.parse(call.args || '{}'); } catch { params = {}; }
+        try { params = JSON.parse(lead.args || '{}'); } catch { params = {}; }
 
         const ctx: SliceContext = {
           teamId: input.teamId, user: input.user, roles: input.roles,
           scope: input.scope, params, host: input.hostContext,
         };
 
-        // Announce BEFORE reading, not after. A slice can take seconds — the
-        // Daily Ops read hits YOT in-process and measured ~4s on live data —
-        // and that is exactly the window the "Reading Daily Ops…" indicator
-        // exists to cover. Emitting after the await left the user staring at
-        // nothing for the entire fetch, which stub-backed tests could never
-        // surface because a stub returns instantly.
-        const announced = !seen.has(slice.id);
-        if (announced) {
-          seen.add(slice.id);
-          yield { type: 'slice', id: slice.id, label: slice.label, href: slice.href };
-        }
-
         try {
           const data = await slice.read(ctx);
-          // Sources list what was actually read, so it is appended on success
-          // only — an announced slice that then failed is not a citation.
-          if (announced) {
-            sources.push({ id: slice.id, label: slice.label, href: slice.href });
-          }
-          nextInput.push({
-            type: 'function_call_output', call_id: call.callId,
-            output: data ?? 'No data available for that request.',
-          });
+          return { group, output: data ?? 'No data available for that request.', ok: true, ms: Date.now() - t0, sliceId: slice.id };
         } catch (err) {
           // One bad slice must not fail the chat.
-          nextInput.push({
-            type: 'function_call_output', call_id: call.callId,
+          return {
+            group, ok: false, ms: Date.now() - t0, sliceId: slice.id,
             output: `That data could not be read right now: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      });
+
+      for (const r of results) {
+        // Sources list what was actually read, so it is appended on success
+        // only — an announced slice that then failed is not a citation.
+        if (r.ok && r.sliceId && announcedNow.has(r.sliceId)) {
+          const slice = byToolName.get(r.group[0].name)!;
+          sources.push({ id: slice.id, label: slice.label, href: slice.href });
+          announcedNow.delete(r.sliceId);
+        }
+        yield { type: 'progress', tool: r.group[0].name, ms: r.ms, duplicates: r.group.length - 1, ok: r.ok };
+        const [first, ...dups] = r.group;
+        nextInput.push({ type: 'function_call_output', call_id: first.callId, output: r.output });
+        for (const d of dups) {
+          nextInput.push({
+            type: 'function_call_output', call_id: d.callId,
+            output: `Duplicate of an identical call in this turn; use the result returned for ${first.callId}.`,
+          });
+        }
+      }
+      for (const group of overflow) {
+        for (const c of group) {
+          nextInput.push({
+            type: 'function_call_output', call_id: c.callId,
+            output: `Not read: more than ${MAX_DISTINCT_READS_PER_ROUND} distinct reads were requested in one turn. Ask again with the broadest parameters the tool accepts.`,
           });
         }
       }

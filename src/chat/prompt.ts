@@ -21,6 +21,10 @@ ${catalog}
 Rules:
 - Use a read tool whenever the answer depends on current data. Do not answer
   business questions from memory.
+- One call per read. Ask a tool once, with the broadest parameters it accepts
+  (every shop, the whole window), and work from that result. Never issue the
+  same call twice in a turn, and never fan out one call per shop when leaving
+  the shop out returns all of them at once.
 - Prefer calling a tool over declining. If a question might be answerable, call
   the tool and see. Only say you cannot see something after a read has actually
   come back without it — never from reading the tool list and guessing.

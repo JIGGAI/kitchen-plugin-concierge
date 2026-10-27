@@ -270,3 +270,71 @@ describe('date context', () => {
     expect(state.bodies[0].instructions).not.toContain('2026-08-08');
   });
 });
+
+describe('duplicate and parallel tool calls', () => {
+  const slowSlice = (id: string, ms: number, calls: string[]): Slice => ({
+    id, label: id, href: `/${id}`, description: `${id} source.`, role: null, parameters: {},
+    async read(ctx) {
+      calls.push(`${id}:${JSON.stringify(ctx.params)}`);
+      await new Promise((r) => setTimeout(r, ms));
+      return `${id} data`;
+    },
+  });
+
+  it('reads an identical call once and answers every call id', async () => {
+    const calls: string[] = [];
+    const cov = slowSlice('coverage', 5, calls);
+    const round1 = Array.from({ length: 5 }, (_, i) => fnCall('read_coverage', `call_${i}`, i === 2 ? '{}' : '{ }'));
+    const { impl, state } = stubFetch([[...round1, completed('resp_1')], [textDelta('done')]]);
+    const events = await collect(streamChat({ ...base, slices: [cov], roles: [], fetchImpl: impl } as any));
+    expect(calls).toEqual(['coverage:{}']);
+    const outputs = state.bodies[1].input;
+    expect(outputs.map((o: any) => o.call_id)).toEqual(['call_0', 'call_1', 'call_2', 'call_3', 'call_4']);
+    expect(outputs[0].output).toBe('coverage data');
+    expect(outputs[1].output).toContain('Duplicate of an identical call');
+    expect(outputs[1].output).toContain('call_0');
+    const progress = events.find((e) => e.type === 'progress') as any;
+    expect(progress).toMatchObject({ tool: 'read_coverage', duplicates: 4, ok: true });
+    expect(events.filter((e) => e.type === 'slice')).toHaveLength(1);
+  });
+
+  it('treats the same arguments in a different key order as the same call', async () => {
+    const calls: string[] = [];
+    const cov = slowSlice('coverage', 1, calls);
+    const { impl } = stubFetch([
+      [fnCall('read_coverage', 'a', '{"date":"2026-10-27","days":1}'), fnCall('read_coverage', 'b', '{"days":1,"date":"2026-10-27"}'), completed()],
+      [textDelta('ok')],
+    ]);
+    await collect(streamChat({ ...base, slices: [cov], roles: [], fetchImpl: impl } as any));
+    expect(calls).toHaveLength(1);
+  });
+
+  it('runs distinct reads concurrently', async () => {
+    const calls: string[] = [];
+    const a = slowSlice('alpha', 120, calls);
+    const b = slowSlice('beta', 120, calls);
+    const c = slowSlice('gamma', 120, calls);
+    const { impl } = stubFetch([
+      [fnCall('read_alpha', 'a'), fnCall('read_beta', 'b'), fnCall('read_gamma', 'c'), completed()],
+      [textDelta('ok')],
+    ]);
+    const t0 = Date.now();
+    const events = await collect(streamChat({ ...base, slices: [a, b, c], roles: [], fetchImpl: impl } as any));
+    expect(Date.now() - t0).toBeLessThan(300);
+    expect(calls).toHaveLength(3);
+    expect(events.filter((e) => e.type === 'progress')).toHaveLength(3);
+    expect((events.at(-1) as any).sources.map((s: any) => s.id).sort()).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('refuses to read more than six distinct calls in one round', async () => {
+    const calls: string[] = [];
+    const cov = slowSlice('coverage', 1, calls);
+    const round1 = Array.from({ length: 8 }, (_, i) => fnCall('read_coverage', `c${i}`, JSON.stringify({ location: `Shop ${i}` })));
+    const { impl, state } = stubFetch([[...round1, completed()], [textDelta('ok')]]);
+    await collect(streamChat({ ...base, slices: [cov], roles: [], fetchImpl: impl } as any));
+    expect(calls).toHaveLength(6);
+    const outputs = state.bodies[1].input;
+    expect(outputs).toHaveLength(8);
+    expect(outputs[7].output).toContain('Not read');
+  });
+});
