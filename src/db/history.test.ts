@@ -21,6 +21,20 @@ describe('history', () => {
     expect(turns[1].content).toBe('Up 4%.');
   });
 
+  it('lists the distinct sources a conversation cited, in first-use order', async () => {
+    const h = await import('./history');
+    const id = h.openConversation(TEAM, 'user-src');
+    h.appendMessage(TEAM, id, 'user', 'q1');
+    h.appendMessage(TEAM, id, 'assistant', 'a1', [{ id: 'daily-ops', label: 'Daily Ops', href: '/daily-ops' }]);
+    h.appendMessage(TEAM, id, 'user', 'q2');
+    h.appendMessage(TEAM, id, 'assistant', 'a2', [
+      { id: 'stylists', label: 'Stylists', href: '/stylists' },
+      { id: 'daily-ops', label: 'Daily Ops', href: '/daily-ops' },
+    ]);
+    expect(h.conversationSources(TEAM, id).map((s) => s.label)).toEqual(['Daily Ops', 'Stylists']);
+    expect(h.conversationSources(TEAM, 'missing')).toEqual([]);
+  });
+
   it('reuses an existing conversation id', async () => {
     const h = await import('./history');
     const id = h.openConversation(TEAM, 'user-2');

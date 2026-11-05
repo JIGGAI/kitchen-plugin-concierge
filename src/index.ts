@@ -20,7 +20,7 @@ export const pluginMeta = {
 };
 
 export {
-  openConversation, appendMessage, recentTurns, transcriptFor,
+  openConversation, appendMessage, recentTurns, transcriptFor, conversationSources,
   archiveConversation, archiveActiveFor, recentSummaries,
   listConversations, deleteConversation, idleUnsummarized,
 } from './db/history';
