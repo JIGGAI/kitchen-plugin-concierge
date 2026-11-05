@@ -105,6 +105,28 @@ export function transcriptFor(teamId: string, conversationId: string): ChatTurn[
 }
 
 /**
+ * Distinct sources cited across a conversation, in first-use order — the
+ * "what Govna read" line of an issue report.
+ */
+export function conversationSources(teamId: string, conversationId: string): Source[] {
+  const { db } = initializeDatabase(teamId);
+  const rows = db.select({ sources: message.sources }).from(message)
+    .where(eq(message.conversationId, conversationId))
+    .orderBy(message.createdAt, sql`rowid`)
+    .all();
+  const out: Source[] = [];
+  for (const r of rows) {
+    if (!r.sources) continue;
+    let list: Source[] = [];
+    try { list = JSON.parse(r.sources); } catch { continue; }
+    for (const s of Array.isArray(list) ? list : []) {
+      if (s && typeof s.id === 'string' && !out.some((o) => o.id === s.id)) out.push({ id: s.id, label: s.label, href: s.href });
+    }
+  }
+  return out;
+}
+
+/**
  * Closes a conversation and records its summary. Messages are NOT deleted —
  * archiving is a status change plus a digest. deleteConversation() is the only
  * code path in this plugin that removes rows.

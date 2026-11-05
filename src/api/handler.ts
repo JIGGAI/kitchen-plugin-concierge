@@ -7,6 +7,7 @@ import {
 import { pluginConfig } from '../db/schema';
 import { DEFAULT_PERSONA } from '../chat/prompt';
 import { DEFAULT_AGENT_ID } from '../chat/gateway';
+import { listIssueReports, getIssueReport } from '../reports/issue';
 
 const MAX_PERSONA_CHARS = 4000;
 
@@ -159,6 +160,21 @@ export async function handleRequest(req: PluginRequest, _ctx?: unknown): Promise
     return deleteConversation(teamId, id)
       ? { status: 200, data: { deleted: id } }
       : { status: 404, data: { error: 'NOT_FOUND', conversationId: id } };
+  }
+
+  // Issue reports filed from the chat drawer. Read-only here: rows are written
+  // by the host when a user presses "Send to RJ", never through this handler.
+  if (req.path === '/reports' && req.method === 'GET') {
+    const limit = Math.min(Math.max(Number(req.query?.limit) || 50, 1), 200);
+    return { status: 200, data: { reports: listIssueReports(teamId, limit) } };
+  }
+
+  if (req.path.startsWith('/reports/') && req.method === 'GET') {
+    const id = req.path.slice('/reports/'.length);
+    const report = getIssueReport(teamId, id);
+    return report
+      ? { status: 200, data: report }
+      : { status: 404, data: { error: 'NOT_FOUND', reportId: id } };
   }
 
   return { status: 404, data: { error: 'NOT_FOUND', path: req.path } };

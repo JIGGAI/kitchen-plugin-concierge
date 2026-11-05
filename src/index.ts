@@ -20,9 +20,15 @@ export const pluginMeta = {
 };
 
 export {
-  openConversation, appendMessage, recentTurns, transcriptFor,
+  openConversation, appendMessage, recentTurns, transcriptFor, conversationSources,
   archiveConversation, archiveActiveFor, recentSummaries,
   listConversations, deleteConversation, idleUnsummarized,
 } from './db/history';
 export type { ConversationRow } from './db/history';
 export { summarizeTurns } from './chat/summarize';
+
+export {
+  REPORT_ISSUE_TOOL, REPORT_ISSUE_TOOL_NAME, normalizeIssueDraft, buildIssuePrompt, issueRef,
+  createIssueReport, markIssueReport, countRecentIssueReports, listIssueReports, getIssueReport,
+} from './reports/issue';
+export type { IssueDraft, IssueReporter, IssuePromptInput, IssueReportRow } from './reports/issue';

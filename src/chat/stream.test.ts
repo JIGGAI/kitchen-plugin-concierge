@@ -156,7 +156,9 @@ describe('streamChat', () => {
     await collect(
       streamChat({ ...base, slices: [summary, payouts], roles: ['media-manager'], fetchImpl: impl } as any),
     );
-    expect(state.bodies[0].tools.map((t: any) => t.name)).toEqual(['read_summary']);
+    const names = state.bodies[0].tools.map((t: any) => t.name);
+    expect(names).toContain('read_summary');
+    expect(names).not.toContain('read_payouts');
   });
 
   it('refuses a tool call for a slice outside the caller role, even if the model invents it', async () => {
@@ -336,5 +338,66 @@ describe('duplicate and parallel tool calls', () => {
     const outputs = state.bodies[1].input;
     expect(outputs).toHaveLength(8);
     expect(outputs[7].output).toContain('Not read');
+  });
+});
+
+describe('report_issue', () => {
+  const draftArgs = JSON.stringify({ title: 'Daily Ops blank', summary: 'Westland shows $0.', steps: 'Opened Daily Ops' });
+
+  it('is advertised to every caller, after the read tools', async () => {
+    const { impl, state } = stubFetch([[textDelta('ok')]]);
+    await collect(streamChat({ ...base, slices: [summary, payouts], roles: [], fetchImpl: impl } as any));
+    expect(state.bodies[0].tools.map((t: any) => t.name)).toEqual(['read_summary', 'report_issue']);
+    expect(state.bodies[0].instructions).toContain('report_issue');
+  });
+
+  it('turns the call into an action event and tells the model nothing was sent', async () => {
+    const { impl, state } = stubFetch([
+      [fnCall('report_issue', 'call_r', draftArgs), completed('resp_1')],
+      [textDelta('Press Send to RJ below.')],
+    ]);
+    const events = await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
+    expect(events).toContainEqual({
+      type: 'action', kind: 'report_issue',
+      draft: { title: 'Daily Ops blank', summary: 'Westland shows $0.', steps: 'Opened Daily Ops' },
+    });
+    expect(events.some((e) => e.type === 'slice')).toBe(false);
+    expect(events.some((e) => e.type === 'progress')).toBe(false);
+    expect(state.bodies[1].input).toEqual([
+      { type: 'function_call_output', call_id: 'call_r', output: expect.stringContaining('Nothing has been sent') },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: 'done', sources: [] });
+  });
+
+  it('offers once per turn even if the model calls it twice', async () => {
+    const { impl, state } = stubFetch([
+      [fnCall('report_issue', 'a', draftArgs), fnCall('report_issue', 'b', draftArgs), completed()],
+      [textDelta('ok')],
+    ]);
+    const events = await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
+    expect(events.filter((e) => e.type === 'action')).toHaveLength(1);
+    expect(state.bodies[1].input.map((o: any) => o.call_id)).toEqual(['a', 'b']);
+  });
+
+  it('rejects a draft without a summary and asks for one', async () => {
+    const { impl, state } = stubFetch([
+      [fnCall('report_issue', 'a', JSON.stringify({ title: 'x' })), completed()],
+      [textDelta('What went wrong?')],
+    ]);
+    const events = await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
+    expect(events.some((e) => e.type === 'action')).toBe(false);
+    expect(state.bodies[1].input[0].output).toContain('title and a summary');
+  });
+
+  it('answers the report alongside reads in the same round, in call order', async () => {
+    const { impl, state } = stubFetch([
+      [fnCall('read_summary', 'r1'), fnCall('report_issue', 'p1', draftArgs), completed()],
+      [textDelta('ok')],
+    ]);
+    const events = await collect(streamChat({ ...base, slices: [summary], roles: [], fetchImpl: impl } as any));
+    expect(events.some((e) => e.type === 'action')).toBe(true);
+    expect(events.some((e) => e.type === 'slice')).toBe(true);
+    expect(state.bodies[1].input.map((o: any) => o.call_id).sort()).toEqual(['p1', 'r1']);
+    expect((events.at(-1) as any).sources.map((s: any) => s.id)).toEqual(['summary']);
   });
 });
