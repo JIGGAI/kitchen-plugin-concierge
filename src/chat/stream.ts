@@ -5,6 +5,7 @@ import {
   type GatewayTarget,
 } from './gateway';
 import { sseEvents } from './sse';
+import { REPORT_ISSUE_TOOL, REPORT_ISSUE_TOOL_NAME, normalizeIssueDraft, type IssueDraft } from '../reports/issue';
 
 export interface Source { id: string; label: string; href: string }
 export interface ChatTurn { role: 'user' | 'assistant'; content: string }
@@ -19,6 +20,11 @@ export type ConciergeEvent =
    * read took and how many duplicate calls it absorbed.
    */
   | { type: 'progress'; tool: string; ms: number; duplicates: number; ok: boolean }
+  /**
+   * The model offered the user a button. Nothing has happened yet: the host
+   * renders the draft with a "Send to RJ" control and acts only on the press.
+   */
+  | { type: 'action'; kind: 'report_issue'; draft: IssueDraft }
   /** `detail` is a short, token-free description for logs and the console; `message` is for the user. */
   | { type: 'error'; code: string; message: string; detail?: string };
 
@@ -69,6 +75,12 @@ const MAX_TOOL_ROUNDS = 4;
 const MAX_DISTINCT_READS_PER_ROUND = 6;
 const READ_CONCURRENCY = 4;
 const USER_MESSAGE = 'Govna could not complete that request.';
+const REPORT_OFFERED_OUTPUT =
+  'A "Send to RJ" button with this draft is now showing under your reply. Nothing has been sent: '
+  + 'tell the user to press it to send the report to RJ, and do not say it was sent. '
+  + 'Do not call report_issue again this turn.';
+const REPORT_INVALID_OUTPUT =
+  'The draft needs both a title and a summary. Ask the user what is wrong if you do not know, then call report_issue once with both.';
 
 interface PendingCall { callId: string; name: string; args: string }
 
@@ -103,12 +115,15 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 
 /** Responses-API tool shape: flat, unlike Chat Completions' nested `function`. */
 function responsesTools(slices: Slice[], roles: string[]) {
-  return toolsFor(slices, roles).map((t) => ({
+  const reads = toolsFor(slices, roles).map((t) => ({
     type: 'function' as const,
     name: t.function.name,
     description: t.function.description,
     parameters: t.function.parameters,
   }));
+  // Reporting a problem is open to everyone who can chat. It is not a slice:
+  // it reads nothing, and the only effect is a button the user may press.
+  return [...reads, REPORT_ISSUE_TOOL];
 }
 
 function userText(input: StreamChatInput): string {
@@ -163,6 +178,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
 
   const sources: Source[] = [];
   const seen = new Set<string>();
+  let reportOffered = false;
 
   try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -208,12 +224,33 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<Concie
       previousResponseId = responseId;
       nextInput = [];
 
+      // The report tool is answered here, before the reads: it costs nothing,
+      // and the user should see the button while the slices are still loading.
+      // One offer per turn — a second call in the same round gets the same
+      // answer without a second button.
+      const reportCalls = calls.filter((c) => c.name === REPORT_ISSUE_TOOL_NAME);
+      const readCalls = calls.filter((c) => c.name !== REPORT_ISSUE_TOOL_NAME);
+      for (const call of reportCalls) {
+        let raw: unknown = {};
+        try { raw = JSON.parse(call.args || '{}'); } catch { raw = {}; }
+        const draft = normalizeIssueDraft(raw);
+        if (!draft) {
+          nextInput.push({ type: 'function_call_output', call_id: call.callId, output: REPORT_INVALID_OUTPUT });
+          continue;
+        }
+        if (!reportOffered) {
+          reportOffered = true;
+          yield { type: 'action', kind: 'report_issue', draft };
+        }
+        nextInput.push({ type: 'function_call_output', call_id: call.callId, output: REPORT_OFFERED_OUTPUT });
+      }
+
       // The model may issue the same call many times in one round — 27 copies
       // of one read with empty arguments was observed — and the slices are the
       // slow part of a turn. Identical calls are read once and every call id
       // gets an answer; distinct reads run a few at a time.
       const groups = new Map<string, PendingCall[]>();
-      for (const call of calls) {
+      for (const call of readCalls) {
         const key = callKey(call);
         const group = groups.get(key);
         if (group) group.push(call); else groups.set(key, [call]);

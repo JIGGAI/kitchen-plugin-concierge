@@ -27,3 +27,22 @@ export const message = sqliteTable('message', {
   sources: text('sources'),
   createdAt: text('created_at').notNull(),
 });
+
+export const issueReport = sqliteTable('issue_report', {
+  id: text('id').primaryKey(),
+  teamId: text('team_id').notNull(),
+  conversationId: text('conversation_id'),
+  userId: text('user_id').notNull(),
+  userEmail: text('user_email'),
+  title: text('title').notNull(),
+  /** The draft the model wrote, as JSON. */
+  draft: text('draft').notNull(),
+  /** The email body that went out, verbatim. */
+  prompt: text('prompt').notNull(),
+  /** Comma-separated addresses. */
+  recipients: text('recipients').notNull(),
+  /** 'pending' | 'sent' | 'failed' */
+  status: text('status').notNull().default('pending'),
+  error: text('error'),
+  createdAt: text('created_at').notNull(),
+});

@@ -34,6 +34,19 @@ second verb fails the suite rather than shipping. The Kitchen tab can edit the
 persona and model but has no route that grants a capability — widening what the
 concierge can read stays a commit.
 
+## The one action: "Report this to RJ"
+
+Besides the reads, every caller's tool list carries `report_issue`. It is not a
+slice and reads nothing: when the model calls it with a draft (title, summary,
+steps, expected, actual) the stream yields
+`{ type: 'action', kind: 'report_issue', draft }` and answers the call with
+"the button is showing; nothing has been sent". The host renders the draft
+with a **Send to RJ** button and, only on the press, builds the email with
+`buildIssuePrompt()`, stores the row with `createIssueReport()` and sends it.
+One offer per turn; a draft without a title and summary is refused and the
+model is told to ask. `GET /reports` and `GET /reports/:id` list what was
+filed.
+
 ## Role gating
 
 A slice carrying a `role` is **omitted from the model's tool list entirely**
