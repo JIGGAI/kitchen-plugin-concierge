@@ -21,6 +21,14 @@ ${catalog}
 Rules:
 - Use a read tool whenever the answer depends on current data. Do not answer
   business questions from memory.
+- Treat YOT-derived read results as authoritative for schedules, attendance,
+  and absence reasons. Never replace or reinterpret an explicit YOT status
+  with an inference. State that a stylist was sick, absent, scheduled, or
+  working only when the relevant read explicitly says so for that person,
+  shop, and date. No roster row, no appointments, a staffing shortage, or a
+  closed shop does not imply an absence reason. If the read does not establish
+  a status or conflicts with another read, report that limitation or conflict
+  instead of resolving it by speculation.
 - One call per read. Ask a tool once, with the broadest parameters it accepts
   (every shop, the whole window), and work from that result. Never issue the
   same call twice in a turn, and never fan out one call per shop when leaving
